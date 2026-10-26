@@ -36,15 +36,38 @@ function setStatus(text, cls) {
   s.textContent = text;
   s.className = 'chip' + (cls ? ' ' + cls : '');
 }
-function save() {
+let knownMonths = new Set();
+const monthOf = iso => iso.slice(0, 7);
+function stateMonths() { return new Set(Object.keys(state.days).map(monthOf)); }
+function monthData(ym) {
+  const out = { days: {}, excused: {}, reasons: {} };
+  Object.keys(state.days).filter(d => monthOf(d) === ym).forEach(d => {
+    out.days[d] = state.days[d];
+    out.excused[d] = state.excused[d] || [];
+    out.reasons[d] = state.reasons[d] || {};
+  });
+  return out;
+}
+// opts: { students: bool, months: ['2026-10'], all: bool }; без аргумента сохраняется всё
+function save(opts) {
+  opts = opts || { students: true, all: true };
   if (!cloud) {
     try { localStorage.setItem(KEY, JSON.stringify(state)); setStatus('Сохранено в браузере', 'ok'); }
     catch (e) { setStatus('Не удалось сохранить', 'err'); }
-    return;
+    return Promise.resolve();
   }
   setStatus('Сохранение…');
-  db.collection('attendance').doc('main').set(state)
-    .then(() => setStatus('Сохранено в облаке', 'ok'))
+  const col = db.collection('attendance');
+  const batch = db.batch();
+  if (opts.students) batch.set(col.doc('meta'), { students: state.students });
+  const months = opts.all ? new Set([...stateMonths(), ...knownMonths]) : new Set(opts.months || []);
+  // документ месяца никогда не удаляется: если в нём не осталось дней, он остаётся пустым
+  months.forEach(ym => batch.set(col.doc('m_' + ym), monthData(ym)));
+  return batch.commit()
+    .then(() => {
+      months.forEach(m => knownMonths.add(m));
+      setStatus('Сохранено в облаке', 'ok');
+    })
     .catch(e => setStatus('Ошибка сохранения: ' + (e.code || e.message), 'err'));
 }
 
@@ -84,9 +107,25 @@ function initCloud() {
     $('logout').hidden = false;
     setStatus('Загрузка…');
     try {
-      const snap = await db.collection('attendance').doc('main').get();
-      if (snap.exists) {
-        state = normalize(snap.data());
+      const snap = await db.collection('attendance').get();
+      const docs = {};
+      snap.forEach(d => { docs[d.id] = d.data(); });
+      knownMonths = new Set();
+      if (docs.meta) {
+        state = emptyState();
+        state.students = docs.meta.students || [];
+        Object.keys(docs).filter(id => id.startsWith('m_')).forEach(id => {
+          const m = docs[id];
+          knownMonths.add(id.slice(2));
+          Object.assign(state.days, m.days);
+          Object.assign(state.excused, m.excused);
+          Object.assign(state.reasons, m.reasons);
+        });
+      } else if (docs.main) {
+        // старый формат: всё в одном документе, переносим по месяцам
+        state = normalize(docs.main);
+        await save();
+        await db.collection('attendance').doc('main').delete();
       } else {
         state = emptyState();
         let local = null;
@@ -94,7 +133,7 @@ function initCloud() {
         if (local && local.students && local.students.length && confirm('В облаке данных ещё нет. Перенести данные, сохранённые в этом браузере?')) {
           state = normalize(local);
         }
-        save();
+        await save();
       }
       setStatus('Подключено к облаку', 'ok');
       startApp();
@@ -188,7 +227,7 @@ $('finish').onclick = () => {
   state.excused[iso] = state.days[iso].filter(id => excused.has(id));
   state.reasons[iso] = {};
   state.excused[iso].forEach(id => { const t = (reasons[id] || '').trim(); if (t) state.reasons[iso][id] = t; });
-  save();
+  save({ months: [monthOf(iso)] });
   const names = absentNames(iso);
   lastResult = names.length
     ? fmt(iso) + ' Отсутствуют:\n' + names.join('\n')
@@ -204,12 +243,40 @@ $('copy').onclick = async () => {
   catch (e) { $('copied').textContent = 'Выделите текст и скопируйте вручную'; }
 };
 
+/* ---------- месяцы ---------- */
+let daysMonth = null;
+let statsScope = 'all';
+const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+const monthName = ym => MONTHS[+ym.slice(5, 7) - 1] + ' ' + ym.slice(0, 4);
+function monthsList(withCurrent) {
+  const set = stateMonths();
+  if (withCurrent) set.add(monthOf(todayISO()));
+  return [...set].sort();
+}
+function monthBar(months, value, onChange, withAll) {
+  const sel = el('select', { className: 'monthsel' });
+  if (withAll) sel.append(el('option', { value: 'all', textContent: 'Все месяцы' }));
+  months.slice().reverse().forEach(m => sel.append(el('option', { value: m, textContent: monthName(m) })));
+  sel.value = value;
+  sel.onchange = () => onChange(sel.value);
+  const i = months.indexOf(value);
+  const prev = el('button', { className: 'btn small', textContent: '‹', title: 'Предыдущий месяц', disabled: i <= 0 });
+  const next = el('button', { className: 'btn small', textContent: '›', title: 'Следующий месяц', disabled: i < 0 || i >= months.length - 1 });
+  prev.onclick = () => onChange(months[i - 1]);
+  next.onclick = () => onChange(months[i + 1]);
+  return el('div', { className: 'monthbar' }, prev, sel, next);
+}
+
 /* ---------- дни ---------- */
 function renderDays() {
   const box = $('daysList');
   box.textContent = '';
-  const dates = Object.keys(state.days).sort().reverse();
-  if (!dates.length) return box.append(el('div', { className: 'muted', textContent: 'Пока нет сохранённых дней.' }));
+  const months = monthsList(true);
+  if (!months.includes(daysMonth)) daysMonth = months[months.length - 1];
+  box.append(monthBar(months, daysMonth, m => { daysMonth = m; renderDays(); }, false));
+  const dates = Object.keys(state.days).filter(d => monthOf(d) === daysMonth).sort().reverse();
+  if (!dates.length) return box.append(el('div', { className: 'muted', textContent: 'В этом месяце нет сохранённых дней.' }));
+  box.append(el('div', { className: 'muted', style: 'margin-bottom:6px', textContent: 'Дней в месяце: ' + dates.length }));
   dates.forEach(iso => {
     const names = absentNames(iso);
     const edit = el('button', { className: 'btn small', textContent: 'Изменить' });
@@ -218,7 +285,7 @@ function renderDays() {
     del.onclick = () => {
       if (confirm('Удалить день ' + fmt(iso) + '?')) {
         delete state.days[iso]; delete state.excused[iso]; delete state.reasons[iso];
-        save(); renderDays();
+        save({ months: [monthOf(iso)] }); renderDays();
       }
     };
     box.append(el('div', { className: 'item' },
@@ -236,15 +303,26 @@ function missedOf(s, dates) {
     up: new Set(dates.filter(d => (state.excused[d] || []).includes(s.id)))
   };
 }
+function scopeDates() {
+  return Object.keys(state.days).filter(d => statsScope === 'all' || monthOf(d) === statsScope).sort();
+}
 function renderStats(openId) {
-  const dates = Object.keys(state.days).sort();
-  const total = dates.length;
   const box = $('statsTable');
   box.textContent = '';
+  const months = monthsList(false);
+  if (statsScope !== 'all' && !months.includes(statsScope)) statsScope = 'all';
+  if (!months.length) {
+    $('statsInfo').textContent = '';
+    return box.append(el('div', { className: 'muted', textContent: 'Пока нет сохранённых дней.' }));
+  }
+  box.append(monthBar(months, statsScope, m => { statsScope = m; renderStats(openId); }, true));
+  const dates = scopeDates();
   const stu = openId && state.students.find(x => x.id === openId);
-  if (stu) return renderStudentStats(stu, dates, box);
-  $('statsInfo').textContent = 'Всего дней в учёте: ' + total + '. Нажмите на студента, чтобы увидеть даты пропусков.';
+  if (stu) return renderStudentStats(stu, dates, box, months);
+  const scopeName = statsScope === 'all' ? 'все месяцы' : monthName(statsScope);
+  $('statsInfo').textContent = 'Период: ' + scopeName + '. Дней в учёте: ' + dates.length + '. Нажмите на студента, чтобы увидеть даты пропусков.';
   if (!state.students.length) return;
+  const total = dates.length;
   const rows = state.students.map(s => Object.assign({ id: s.id, name: s.name }, missedOf(s, dates)))
     .sort((a, b) => b.missed.length - a.missed.length || a.name.localeCompare(b.name, 'ru'));
   const table = el('table');
@@ -267,14 +345,35 @@ function renderStats(openId) {
   table.append(tb);
   box.append(table);
 }
-function renderStudentStats(stu, dates, box) {
+function renderStudentStats(stu, dates, box, months) {
   const r = missedOf(stu, dates);
   $('statsInfo').textContent = '';
   const back = el('button', { className: 'btn small', textContent: '← Ко всем студентам' });
   back.onclick = () => renderStats();
   box.append(back, el('h2', { textContent: stu.name, style: 'margin-top:14px' }),
-    el('div', { className: 'muted', textContent: 'Пропусков: ' + r.missed.length + ', из них по УП: ' + r.up.size + ', дней в учёте: ' + dates.length }));
+    el('div', { className: 'muted', textContent: (statsScope === 'all' ? 'Все месяцы' : monthName(statsScope)) +
+      ': пропусков ' + r.missed.length + ', из них по УП ' + r.up.size + ', дней в учёте ' + dates.length }));
+  if (statsScope === 'all' && months.length > 1) {
+    const table = el('table', { style: 'margin-top:12px' });
+    table.append(el('thead', null, el('tr', null,
+      el('th', { textContent: 'Месяц' }),
+      el('th', { className: 'num', textContent: 'Дней' }),
+      el('th', { className: 'num', textContent: 'Пропусков' }),
+      el('th', { className: 'num', textContent: 'УП' }))));
+    const tb = el('tbody');
+    months.slice().reverse().forEach(m => {
+      const md = Object.keys(state.days).filter(d => monthOf(d) === m).sort();
+      const mr = missedOf(stu, md);
+      tb.append(el('tr', null, el('td', { textContent: monthName(m) }),
+        el('td', { className: 'num', textContent: md.length }),
+        el('td', { className: 'num', textContent: mr.missed.length }),
+        el('td', { className: 'num', textContent: mr.up.size })));
+    });
+    table.append(tb);
+    box.append(table);
+  }
   if (!r.missed.length) return box.append(el('p', { textContent: 'Пропусков нет.' }));
+  box.append(el('h2', { textContent: 'Даты пропусков', style: 'margin-top:16px' }));
   r.missed.slice().reverse().forEach(d => {
     const w = (state.reasons[d] || {})[stu.id];
     box.append(el('div', { className: 'item' },
@@ -293,14 +392,14 @@ function renderStudents() {
     const del = el('button', { className: 'btn small danger', textContent: 'Удалить' });
     ren.onclick = () => {
       const n = prompt('Новое имя', s.name);
-      if (n && n.trim()) { s.name = n.trim(); save(); renderStudents(); }
+      if (n && n.trim()) { s.name = n.trim(); save({ students: true }); renderStudents(); }
     };
     del.onclick = () => {
       if (confirm('Удалить «' + s.name + '»? Его пропуски пропадут из статистики.')) {
         state.students = state.students.filter(x => x.id !== s.id);
         Object.keys(state.days).forEach(d => state.days[d] = state.days[d].filter(id => id !== s.id));
         Object.keys(state.excused).forEach(d => state.excused[d] = state.excused[d].filter(id => id !== s.id));
-        save(); renderStudents();
+        save({ students: true, all: true }); renderStudents();
       }
     };
     box.append(el('div', { className: 'item' }, el('div', { className: 'grow', textContent: s.name }), el('div', { className: 'actions' }, ren, del)));
@@ -311,7 +410,7 @@ $('addStudents').onclick = () => {
   if (!names.length) return;
   names.forEach(n => state.students.push({ id: uid(), name: n }));
   $('newNames').value = '';
-  save(); renderStudents(); loadDate();
+  save({ students: true }); renderStudents(); loadDate();
 };
 
 /* ---------- резервная копия ---------- */
@@ -333,6 +432,29 @@ $('importFile').onchange = async e => {
     state = normalize(s); save(); renderStudents(); loadDate();
   } catch (err) { alert('Не удалось прочитать файл'); }
   e.target.value = '';
+};
+
+/* ---------- очистка ---------- */
+$('clearAll').onclick = async () => {
+  const months = new Set([...stateMonths(), ...knownMonths]);
+  if (!months.size) return alert('Посещаемость уже пуста');
+  if (!confirm('Будут удалены ВСЕ отметки посещаемости за все месяцы. Список студентов останется. Лучше сначала скачать копию. Продолжить?')) return;
+  if ((prompt('Для подтверждения введите слово УДАЛИТЬ') || '').trim().toUpperCase() !== 'УДАЛИТЬ') return alert('Отменено');
+  state.days = {}; state.excused = {}; state.reasons = {};
+  if (cloud) {
+    setStatus('Удаление…');
+    const batch = db.batch();
+    months.forEach(m => batch.delete(db.collection('attendance').doc('m_' + m)));
+    try { await batch.commit(); }
+    catch (e) { alert('Не удалось очистить: ' + (e.code || e.message)); return location.reload(); }
+    knownMonths = new Set();
+    setStatus('Посещаемость очищена', 'ok');
+  } else {
+    save();
+  }
+  daysMonth = null; statsScope = 'all';
+  loadDate();
+  alert('Посещаемость очищена');
 };
 
 /* ---------- старт ---------- */
