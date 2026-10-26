@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101a30">
+<title>Посещаемость</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+  </div>
+  <div class="grow">
+    <div class="title">Посещаемость <span class="dot">•</span> <span id="syncLabel">группа</span></div>
+    <div class="subtitle">Учёт присутствия студентов по дням</div>
+  </div>
+  <span class="chip" id="status"></span>
+  <button class="btn" id="logout" hidden>Выйти</button>
+</header>
+
+<main>
+  <section id="login" class="panel center" hidden>
+    <h2>Вход</h2>
+    <p class="muted">Данные студентов хранятся в защищённой базе и доступны только владельцу.</p>
+    <button class="btn primary" id="loginBtn">Войти через Google</button>
+    <p class="muted" id="loginMsg"></p>
+  </section>
+
+  <div id="app" hidden>
+    <nav id="tabs">
+      <button data-tab="check" class="active">Отметка</button>
+      <button data-tab="days">Дни</button>
+      <button data-tab="stats">Статистика</button>
+      <button data-tab="students">Студенты</button>
+    </nav>
+
+    <section id="tab-check" class="panel">
+      <div class="row">
+        <input type="date" id="date">
+        <span class="muted" id="dateInfo"></span>
+        <span class="grow"></span>
+        <button class="btn small" id="allPresent">Все на месте</button>
+        <button class="btn small" id="nonePresent">Снять все</button>
+      </div>
+      <div id="checkList"></div>
+      <div class="actionbar">
+        <button class="btn primary" id="finish">Завершить список</button>
+      </div>
+      <div id="resultBox" hidden>
+        <div id="result"></div>
+        <button class="btn small" id="copy">Копировать</button>
+        <span class="muted" id="copied"></span>
+      </div>
+    </section>
+
+    <section id="tab-days" class="panel" hidden>
+      <h2>Сохранённые дни</h2>
+      <div id="daysList"></div>
+    </section>
+
+    <section id="tab-stats" class="panel" hidden>
+      <h2>Статистика пропусков</h2>
+      <div class="muted" id="statsInfo" style="margin-bottom:10px"></div>
+      <div id="statsTable"></div>
+    </section>
+
+    <section id="tab-students" hidden>
+      <div class="panel">
+        <h2>Добавить студентов</h2>
+        <textarea id="newNames" placeholder="Один студент на строку"></textarea>
+        <div class="row" style="margin-top:10px"><button class="btn primary" id="addStudents">Добавить</button></div>
+      </div>
+      <div class="panel">
+        <h2>Список студентов</h2>
+        <div id="studentsList"></div>
+      </div>
+      <div class="panel">
+        <h2>Резервная копия</h2>
+        <p class="muted" style="margin-top:0">Файл со всеми данными. Можно скачивать время от времени и загружать обратно.</p>
+        <div class="row">
+          <button class="btn" id="export">Скачать копию</button>
+          <button class="btn" id="importBtn">Загрузить копию</button>
+          <input type="file" id="importFile" accept="application/json" hidden>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
